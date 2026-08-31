@@ -1,0 +1,107 @@
+
+name: Validate Main PR Commits
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  validate-commits:
+    name: Check commits exist in dev and uat
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch required branches
+        run: |
+          git fetch origin dev
+          git fetch origin uat
+
+      - name: Check PR commits
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -e
+
+          echo "Checking commits in PR #$PR_NUMBER..."
+          echo ""
+
+          # Get commits that are part of the PR.
+          # Format: oldest -> newest
+          PR_COMMITS=$(git rev-list --no-merges --reverse \
+            "origin/main..${{ github.event.pull_request.head.sha }}")
+
+          if [ -z "$PR_COMMITS" ]; then
+            echo "No commits found to check."
+            exit 0
+          fi
+
+          FAILED=0
+
+          for COMMIT in $PR_COMMITS; do
+            SHORT_COMMIT=$(git rev-parse --short "$COMMIT")
+            MESSAGE=$(git log -1 --pretty=format:"%s" "$COMMIT")
+
+            DEV_OK=0
+            UAT_OK=0
+
+            if git merge-base --is-ancestor "$COMMIT" origin/dev; then
+              DEV_OK=1
+            fi
+
+            if git merge-base --is-ancestor "$COMMIT" origin/uat; then
+              UAT_OK=1
+            fi
+
+            if [ "$DEV_OK" -eq 1 ] && [ "$UAT_OK" -eq 1 ]; then
+              echo "✓ $SHORT_COMMIT - $MESSAGE"
+              echo "  dev:     ✓"
+              echo "  uat:     ✓"
+            else
+              echo "✗ $SHORT_COMMIT - $MESSAGE"
+              
+              if [ "$DEV_OK" -eq 1 ]; then
+                echo "  dev:     ✓"
+              else
+                echo "  dev:     ✗ MISSING"
+                FAILED=1
+              fi
+
+              if [ "$UAT_OK" -eq 1 ]; then
+                echo "  uat:     ✓"
+              else
+                echo "  uat:     ✗ MISSING"
+                FAILED=1
+              fi
+            fi
+
+            echo ""
+          done
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo "========================================"
+            echo "❌ Main PR validation failed."
+            echo ""
+            echo "Every commit in this PR must already exist"
+            echo "in both dev and uat before merging into main."
+            echo "========================================"
+            exit 1
+          fi
+
+          echo "========================================"
+          echo "✅ All PR commits exist in dev and uat."
+          echo "========================================"
+
