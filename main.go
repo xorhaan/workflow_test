@@ -35,7 +35,7 @@ func ToUpperCase(text string) string {
 // }
 
 func main() {
-	fmt.Println(Add(5, 3))
+	fmt.Println(Add(5, 34))
 	fmt.Println(ReverseString("hello"))
 	fmt.Println(IsEven(10))
 	fmt.Println(ToUpperCase("golang"))
