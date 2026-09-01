@@ -33,7 +33,7 @@ func ToUpperCase(text string) string {
 
 // 5. Get current timestamp
 func GetCurrentTimestamp() string {
-	return time.Now().String()
+	return time.Now().Format(time.RFC3339)
 }
 
 func main() {
