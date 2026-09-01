@@ -219,11 +219,11 @@ jobs:
       - name: Create PR main -> dev
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
         run: |
-          if git diff --quiet origin/dev..origin/main; then
-            echo "needs_pr=false" >> $GITHUB_OUTPUT
-          else
-            echo "needs_pr=true" >> $GITHUB_OUTPUT
+          if git merge-base --is-ancestor "$MERGE_SHA" origin/dev; then
+            echo "dev already contains merge commit $MERGE_SHA"
+            exit 0
           fi
 
           EXISTING_PR=$(gh pr list \
@@ -247,11 +247,11 @@ jobs:
       - name: Create PR main -> uat
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
         run: |
-          if git diff --quiet origin/uat..origin/main; then
-            echo "needs_pr=false" >> $GITHUB_OUTPUT
-          else
-            echo "needs_pr=true" >> $GITHUB_OUTPUT
+          if git merge-base --is-ancestor "$MERGE_SHA" origin/uat; then
+            echo "uat already contains merge commit $MERGE_SHA"
+            exit 0
           fi
 
           EXISTING_PR=$(gh pr list \
