@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"strings"
-	"time"
 )
 
 // 1. Add two numbers
@@ -31,14 +30,14 @@ func ToUpperCase(text string) string {
 }
 
 // 5. Get current timestamp
-func GetCurrentTimestamp() string {
-	return time.Now().Format(time.RFC3339)
-}
+// func GetCurrentTimestamp() string {
+// 	return time.Now().Format(time.RFC3339)
+// }
 
 func main() {
 	fmt.Println(Add(5, 3))
 	fmt.Println(ReverseString("hello"))
 	fmt.Println(IsEven(10))
 	fmt.Println(ToUpperCase("golang"))
-	fmt.Println(GetCurrentTimestamp())
+	// fmt.Println(GetCurrentTimestamp())
 }
