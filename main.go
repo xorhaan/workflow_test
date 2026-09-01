@@ -7,7 +7,7 @@ import (
 
 // 1. Add two numbers
 func Add(a, b int) int {
-	return a + b
+	return b + a
 }
 
 // 2. Reverse a string
@@ -26,6 +26,7 @@ func IsEven(n int) bool {
 
 // 4. Convert text to uppercase
 func ToUpperCase(text string) string {
+	fmt.Println("Converting text to uppercase:", text)
 	return strings.ToUpper(text)
 }
 
