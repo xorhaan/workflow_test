@@ -22,7 +22,7 @@ func ReverseString(s string) string {
 
 // 3. Check if a number is even
 func IsEven(n int) bool {
-	return n%2 == 0
+	return (n & 1) == 0
 }
 
 // 4. Convert text to uppercase
