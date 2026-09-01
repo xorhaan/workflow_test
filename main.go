@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // 1. Add two numbers
@@ -28,6 +29,11 @@ func IsEven(n int) bool {
 func ToUpperCase(text string) string {
 	fmt.Println("Converting text to uppercase:", text)
 	return strings.ToUpper(text)
+}
+
+// 5. Get current timestamp
+func GetCurrentTimestamp() string {
+	return time.Now().Format(time.RFC3339)
 }
 
 func main() {
