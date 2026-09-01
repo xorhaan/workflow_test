@@ -42,5 +42,4 @@ func main() {
 	fmt.Println(ReverseString("hello"))
 	fmt.Println(IsEven(10))
 	fmt.Println(ToUpperCase("golang"))
-	// fmt.Println(GetCurrentTimestamp())
 }
