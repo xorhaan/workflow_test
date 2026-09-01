@@ -8,7 +8,7 @@ import (
 
 // 1. Add two numbers
 func Add(a, b int) int {
-	fmt.Println("adding a and b in main")
+	fmt.Println("adding a and b in uat")
 	return b + a
 }
 
@@ -42,5 +42,4 @@ func main() {
 	fmt.Println(ReverseString("hello"))
 	fmt.Println(IsEven(10))
 	fmt.Println(ToUpperCase("golang"))
-	// fmt.Println(GetCurrentTimestamp())
 }
