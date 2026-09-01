@@ -107,80 +107,165 @@
 
 # v2
 
-name: Sync Master to Dev and UAT
+# name: Create PR TO DEV AND UAT
+
+# on:
+#   push:
+#     branches:
+#       - master
+
+# permissions:
+#   contents: write
+#   pull-requests: write
+
+# jobs:
+#   sync-branches:
+#     runs-on: ubuntu-latest
+
+#     steps:
+#       - name: Checkout
+#         uses: actions/checkout@v4
+#         with:
+#           fetch-depth: 0
+
+#       - name: Fetch branches
+#         run: |
+#           git fetch origin master
+#           git fetch origin dev
+#           git fetch origin uat
+
+#       #
+#       # MASTER -> DEV
+#       #
+#       - name: Check if dev needs updates
+#         id: dev_check
+#         run: |
+#           if git merge-base --is-ancestor origin/master origin/dev; then
+#             echo "needs_pr=false" >> $GITHUB_OUTPUT
+#           else
+#             echo "needs_pr=true" >> $GITHUB_OUTPUT
+#           fi
+
+#       - name: Create Master -> Dev PR
+#         if: steps.dev_check.outputs.needs_pr == 'true'
+#         uses: peter-evans/create-pull-request@v7
+#         with:
+#           token: ${{ secrets.GITHUB_TOKEN }}
+#           branch: auto-sync-master-to-dev
+#           base: dev
+#           title: "Sync master into dev"
+#           body: |
+#             Auto-generated PR to merge latest changes from master into dev.
+#           commit-message: "Sync master into dev"
+
+#       #
+#       # MASTER -> UAT
+#       #
+#       - name: Check if uat needs updates
+#         id: uat_check
+#         run: |
+#           if git merge-base --is-ancestor origin/master origin/uat; then
+#             echo "needs_pr=false" >> $GITHUB_OUTPUT
+#           else
+#             echo "needs_pr=true" >> $GITHUB_OUTPUT
+#           fi
+
+#       - name: Create Master -> UAT PR
+#         if: steps.uat_check.outputs.needs_pr == 'true'
+#         uses: peter-evans/create-pull-request@v7
+#         with:
+#           token: ${{ secrets.GITHUB_TOKEN }}
+#           branch: auto-sync-master-to-uat
+#           base: uat
+#           title: "Sync master into uat"
+#           body: |
+#             Auto-generated PR to merge latest changes from master into uat.
+#           commit-message: "Sync master into uat"
+
+# v3
+
+name: Create Sync PRs from Main
 
 on:
-  push:
+  pull_request:
     branches:
-      - master
+      - main
     types:
-      - created
-      - updated
+      - closed
 
 permissions:
-  contents: write
+  contents: read
   pull-requests: write
 
 jobs:
-  sync-branches:
+  create-sync-prs:
+    # Run only when the PR was merged
+    if: github.event.pull_request.merged == true
+
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Fetch branches
         run: |
-          git fetch origin master
+          git fetch origin main
           git fetch origin dev
           git fetch origin uat
 
-      #
-      # MASTER -> DEV
-      #
-      - name: Check if dev needs updates
-        id: dev_check
+      - name: Create PR main -> dev
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if git merge-base --is-ancestor origin/master origin/dev; then
-            echo "needs_pr=false" >> $GITHUB_OUTPUT
-          else
-            echo "needs_pr=true" >> $GITHUB_OUTPUT
+          if git merge-base --is-ancestor origin/main origin/dev; then
+            echo "dev already contains all commits from main"
+            exit 0
           fi
 
-      - name: Create Master -> Dev PR
-        if: steps.dev_check.outputs.needs_pr == 'true'
-        uses: peter-evans/create-pull-request@v7
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          branch: auto-sync-master-to-dev
-          base: dev
-          title: "Sync master into dev"
-          body: |
-            Auto-generated PR to merge latest changes from master into dev.
-          commit-message: "Sync master into dev"
+          EXISTING_PR=$(gh pr list \
+            --base dev \
+            --head main \
+            --state open \
+            --json number \
+            --jq 'length')
 
-      #
-      # MASTER -> UAT
-      #
-      - name: Check if uat needs updates
-        id: uat_check
-        run: |
-          if git merge-base --is-ancestor origin/master origin/uat; then
-            echo "needs_pr=false" >> $GITHUB_OUTPUT
-          else
-            echo "needs_pr=true" >> $GITHUB_OUTPUT
+          if [ "$EXISTING_PR" -gt 0 ]; then
+            echo "PR main -> dev already exists"
+            exit 0
           fi
 
-      - name: Create Master -> UAT PR
-        if: steps.uat_check.outputs.needs_pr == 'true'
-        uses: peter-evans/create-pull-request@v7
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          branch: auto-sync-master-to-uat
-          base: uat
-          title: "Sync master into uat"
-          body: |
-            Auto-generated PR to merge latest changes from master into uat.
-          commit-message: "Sync master into uat"
+          gh pr create \
+            --base dev \
+            --head main \
+            --title "Sync main into dev" \
+            --body "Auto-generated PR to sync latest changes from main into dev."
+
+      - name: Create PR main -> uat
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if git merge-base --is-ancestor origin/main origin/uat; then
+            echo "uat already contains all commits from main"
+            exit 0
+          fi
+
+          EXISTING_PR=$(gh pr list \
+            --base uat \
+            --head main \
+            --state open \
+            --json number \
+            --jq 'length')
+
+          if [ "$EXISTING_PR" -gt 0 ]; then
+            echo "PR main -> uat already exists"
+            exit 0
+          fi
+
+          gh pr create \
+            --base uat \
+            --head main \
+            --title "Sync main into uat" \
+            --body "Auto-generated PR to sync latest changes from main into uat."
