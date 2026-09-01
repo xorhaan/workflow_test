@@ -4,3 +4,5 @@ UAT ONLY
 Main testing testing
 
 more pr testing
+
+testing after settings updated
