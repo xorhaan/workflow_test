@@ -30,15 +30,9 @@ func ToUpperCase(text string) string {
 	return strings.ToUpper(text)
 }
 
-// 5. Get current timestamp
-// func GetCurrentTimestamp() string {
-// 	return time.Now().Format(time.RFC3339)
-// }
-
 func main() {
 	fmt.Println(Add(5, 34))
 	fmt.Println(ReverseString("hello"))
 	fmt.Println(IsEven(10))
 	fmt.Println(ToUpperCase("golang"))
-	// fmt.Println(GetCurrentTimestamp())
 }
