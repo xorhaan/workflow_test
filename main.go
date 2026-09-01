@@ -8,6 +8,7 @@ import (
 
 // 1. Add two numbers
 func Add(a, b int) int {
+	fmt.Println("adding a and b in uat")
 	return b + a
 }
 
