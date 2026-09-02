@@ -1,10 +1,12 @@
-Version: 4
+Version: 3
 
 Shared:
 - Login
 - Dashboard
 - Search
+- Export
 
-UAT:
-- UAT Fix 1
-- UAT Validation Rule
+Main:
+- Feature A
+- Feature B
+- New Feature
