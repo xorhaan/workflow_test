@@ -8,11 +8,11 @@ import (
 
 // Add returns the sum of two integers.
 func Add(a, b int) int {
-	fmt.Println("adding a and b uat-env")
+	fmt.Println("adding a and b realistic prod-v2")
+	fmt.Println("real")
 	return a + b
 }
 
-// ReverseString reverses a string.
 func ReverseString(s string) string {
 	runes := []rune(s)
 	for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
@@ -48,5 +48,4 @@ func main() {
 	fmt.Println(IsEven(10))
 	fmt.Println(ToUpperCase("golang"))
 	fmt.Println(GetCurrentTimestamp())
-	fmt.Println(GetEnvironment())
 }
