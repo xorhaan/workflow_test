@@ -1,12 +1,5 @@
 Version: 3
 
-Shared:
-- Login
-- Dashboard
-- Search
-- Export
-
-Main:
-- Feature A
-- Feature B
-- New Feature
+A1
+B2
+C3
