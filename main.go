@@ -8,11 +8,11 @@ import (
 
 // Add returns the sum of two integers.
 func Add(a, b int) int {
-	fmt.Println("adding a and b prod-v2")
+	fmt.Println("adding a and b realistic prod-v2")
+	fmt.Println("real")
 	return a + b
 }
 
-// ReverseString reverses a string.
 func ReverseString(s string) string {
 	runes := []rune(s)
 	for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
