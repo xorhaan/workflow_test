@@ -39,12 +39,6 @@ func IsOdd(n int) bool {
 	return n%2 != 0
 }
 
-// ToUpperCase converts text to uppercase.
-func ToUpperCase(text string) string {
-	fmt.Println("dev logging:", text)
-	return strings.ToUpper(text)
-}
-
 // DEV-only helper.
 func ToLowerCase(text string) string {
 	return strings.ToLower(text)
