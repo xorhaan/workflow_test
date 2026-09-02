@@ -184,90 +184,198 @@
 
 # v3
 
-name: Create Sync PRs from Main
+# name: Create Sync PRs from Main
+
+# on:
+#   pull_request:
+#     branches:
+#       - main
+#     types:
+#       - closed
+
+# permissions:
+#   contents: read
+#   pull-requests: write
+
+# jobs:
+#   create-sync-prs:
+#     # Run only when the PR was merged
+#     if: github.event.pull_request.merged == true
+
+#     runs-on: ubuntu-latest
+
+#     steps:
+#       - name: Checkout repository
+#         uses: actions/checkout@v4
+#         with:
+#           fetch-depth: 0
+
+#       - name: Fetch branches
+#         run: |
+#           git fetch origin main
+#           git fetch origin dev
+#           git fetch origin uat
+
+#       - name: Create PR main -> dev
+#         env:
+#           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+#           MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+#         run: |
+#           if git merge-base --is-ancestor "$MERGE_SHA" origin/dev; then
+#             echo "dev already contains merge commit $MERGE_SHA"
+#             exit 0
+#           fi
+
+#           EXISTING_PR=$(gh pr list \
+#             --base dev \
+#             --head main \
+#             --state open \
+#             --json number \
+#             --jq 'length')
+
+#           if [ "$EXISTING_PR" -gt 0 ]; then
+#             echo "PR main -> dev already exists"
+#             exit 0
+#           fi
+
+#           gh pr create \
+#             --base dev \
+#             --head main \
+#             --title "Sync main into dev" \
+#             --body "Auto-generated PR to sync latest changes from main into dev."
+
+#       - name: Create PR main -> uat
+#         env:
+#           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+#           MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+#         run: |
+#           if git merge-base --is-ancestor "$MERGE_SHA" origin/uat; then
+#             echo "uat already contains merge commit $MERGE_SHA"
+#             exit 0
+#           fi
+
+#           EXISTING_PR=$(gh pr list \
+#             --base uat \
+#             --head main \
+#             --state open \
+#             --json number \
+#             --jq 'length')
+
+#           if [ "$EXISTING_PR" -gt 0 ]; then
+#             echo "PR main -> uat already exists"
+#             exit 0
+#           fi
+
+#           gh pr create \
+#             --base uat \
+#             --head main \
+#             --title "Sync main into uat" \
+#             --body "Auto-generated PR to sync latest changes from main into uat."
+
+# v4:
+
+
+name: Create branch sync PRs
 
 on:
   pull_request:
-    branches:
-      - main
     types:
       - closed
+    branches:
+      - main
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
 
 jobs:
   create-sync-prs:
-    # Run only when the PR was merged
-    if: github.event.pull_request.merged == true
+    if: >
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main'
 
     runs-on: ubuntu-latest
 
+    strategy:
+      matrix:
+        target:
+          - dev
+          - uat
+
+    concurrency:
+      group: sync-main-to-${{ matrix.target }}
+      cancel-in-progress: false
+
     steps:
-      - name: Checkout repository
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
 
-      - name: Fetch branches
+      - name: Fetch target branch
         run: |
-          git fetch origin main
-          git fetch origin dev
-          git fetch origin uat
+          git fetch origin "${{ matrix.target }}"
 
-      - name: Create PR main -> dev
+      - name: Check whether target already contains main
+        id: check
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          if git merge-base --is-ancestor origin/main "origin/$TARGET"; then
+            echo "required=false" >> "$GITHUB_OUTPUT"
+            echo "$TARGET already contains the latest main commit."
+          else
+            echo "required=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check for existing sync PR
+        if: steps.check.outputs.required == 'true'
+        id: existing
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          TARGET: ${{ matrix.target }}
         run: |
-          if git merge-base --is-ancestor "$MERGE_SHA" origin/dev; then
-            echo "dev already contains merge commit $MERGE_SHA"
-            exit 0
-          fi
+          count="$(
+            gh pr list \
+              --base "$TARGET" \
+              --state open \
+              --search "head:sync/main-to-$TARGET/" \
+              --json number \
+              --jq 'length'
+          )"
 
-          EXISTING_PR=$(gh pr list \
-            --base dev \
-            --head main \
-            --state open \
-            --json number \
-            --jq 'length')
+          echo "count=$count" >> "$GITHUB_OUTPUT"
 
-          if [ "$EXISTING_PR" -gt 0 ]; then
-            echo "PR main -> dev already exists"
-            exit 0
-          fi
+      - name: Create disposable sync branch
+        if: >
+          steps.check.outputs.required == 'true' &&
+          steps.existing.outputs.count == '0'
+        id: branch
+        env:
+          TARGET: ${{ matrix.target }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          branch="sync/main-to-$TARGET/$RUN_ID-$RUN_ATTEMPT"
 
-          gh pr create \
-            --base dev \
-            --head main \
-            --title "Sync main into dev" \
-            --body "Auto-generated PR to sync latest changes from main into dev."
+          git checkout -B "$branch" origin/main
+          git push origin "$branch"
 
-      - name: Create PR main -> uat
+          echo "name=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: Create synchronization PR
+        if: steps.branch.outputs.name != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          TARGET: ${{ matrix.target }}
+          SYNC_BRANCH: ${{ steps.branch.outputs.name }}
+          MERGED_PR: ${{ github.event.pull_request.number }}
         run: |
-          if git merge-base --is-ancestor "$MERGE_SHA" origin/uat; then
-            echo "uat already contains merge commit $MERGE_SHA"
-            exit 0
-          fi
-
-          EXISTING_PR=$(gh pr list \
-            --base uat \
-            --head main \
-            --state open \
-            --json number \
-            --jq 'length')
-
-          if [ "$EXISTING_PR" -gt 0 ]; then
-            echo "PR main -> uat already exists"
-            exit 0
-          fi
-
           gh pr create \
-            --base uat \
-            --head main \
-            --title "Sync main into uat" \
-            --body "Auto-generated PR to sync latest changes from main into uat."
+            --base "$TARGET" \
+            --head "$SYNC_BRANCH" \
+            --title "Sync main into $TARGET" \
+            --body "Automated synchronization from main into $TARGET after PR #$MERGED_PR was merged.
+
+          Important: The source is a disposable synchronization branch. If conflicts are resolved in the GitHub UI, main will not be modified."
