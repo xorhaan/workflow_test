@@ -8,6 +8,8 @@ import (
 
 // Add returns the sum of two integers.
 func Add(a, b int) int {
+	fmt.Println("adding a and b realistic prod-v2")
+	fmt.Println("real")
 	fmt.Println("adding a and b dev-experiment")
 	return b + a
 }
@@ -24,6 +26,12 @@ func ReverseString(s string) string {
 // IsEven checks whether a number is even.
 func IsEven(n int) bool {
 	return n%2 == 0
+}
+
+// ToUpperCase converts text to uppercase.
+func ToUpperCase(text string) string {
+	fmt.Println("processing text:", text)
+	return strings.ToUpper(text)
 }
 
 // DEV-only function.
