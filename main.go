@@ -8,7 +8,7 @@ import (
 
 // 1. Add two numbers
 func Add(a, b int) int {
-	fmt.Println("adding a and b in dev")
+	fmt.Println("adding a and b in prod-conflict")
 	return b + a
 }
 
