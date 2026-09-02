@@ -8,7 +8,7 @@ import (
 
 // 1. Add two numbers
 func Add(a, b int) int {
-	fmt.Println("adding a and b in new flow")
+	fmt.Println("adding a and b conflict")
 	return b + a
 }
 
