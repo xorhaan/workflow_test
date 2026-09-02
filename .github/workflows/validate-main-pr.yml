@@ -316,21 +316,45 @@ jobs:
       - name: Fetch target branch
         run: |
           git fetch origin "${{ matrix.target }}"
-
-      - name: Check whether target already contains main
-        id: check
+      
+      - name: Check for actual file differences
+        id: diff
         env:
           TARGET: ${{ matrix.target }}
         run: |
-          if git merge-base --is-ancestor origin/main "origin/$TARGET"; then
+          FILES_CHANGED=$(git diff --name-only origin/$TARGET..origin/main | wc -l)
+
+          echo "files_changed=$FILES_CHANGED" >> "$GITHUB_OUTPUT"
+
+          if [ "$FILES_CHANGED" -eq 0 ]; then
             echo "required=false" >> "$GITHUB_OUTPUT"
-            echo "$TARGET already contains the latest main commit."
+            echo "No effective changes to sync."
           else
             echo "required=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Check whether target is missing changes from main
+        id: check
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          git fetch origin main "$TARGET"
+          MAIN_AHEAD_COUNT=$(
+            git rev-list --right-only --count origin/$TARGET...origin/main
+          )
+          echo "main_ahead_count=$MAIN_AHEAD_COUNT"
+          if [ "$MAIN_AHEAD_COUNT" -gt 0 ]; then
+            echo "required=true" >> "$GITHUB_OUTPUT"
+            echo "Main contains changes not present in $TARGET"
+          else
+            echo "required=false" >> "$GITHUB_OUTPUT"
+            echo "$TARGET already contains everything from main"
+          fi
+
       - name: Check for existing sync PR
-        if: steps.check.outputs.required == 'true'
+        if: >
+          steps.check.outputs.required == 'true' &&
+          steps.diff.outputs.required == 'true'
         id: existing
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -350,6 +374,7 @@ jobs:
       - name: Create disposable sync branch
         if: >
           steps.check.outputs.required == 'true' &&
+          steps.diff.outputs.required == 'true' &&
           steps.existing.outputs.count == '0'
         id: branch
         env:
