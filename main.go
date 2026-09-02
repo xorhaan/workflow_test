@@ -8,7 +8,7 @@ import (
 
 // 1. Add two numbers
 func Add(a, b int) int {
-	fmt.Println("adding a and b in env")
+	fmt.Println("adding a and b in proper")
 	return b + a
 }
 
