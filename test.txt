@@ -1,16 +1,9 @@
 Version: 3
 
-Shared:
-- Login
-- Dashboard
-
-Main:
-- Feature A
-- Feature B
-- New Feature
-DEV:
-- Experimental Search
-- Beta Feature X
-- Beta Feature Y
-- Logging Changes
-- Refactor 1
+A1
+B2
+C3
+D4
+E5
+F6
+G7
