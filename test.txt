@@ -1,9 +1,13 @@
-Version: 4
+Version: 3
 
 Shared:
 - Login
 - Dashboard
 
+Main:
+- Feature A
+- Feature B
+- New Feature
 DEV:
 - Experimental Search
 - Beta Feature X
