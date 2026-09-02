@@ -6,13 +6,13 @@ import (
 	"time"
 )
 
-// 1. Add two numbers
+// Add returns the sum of two integers.
 func Add(a, b int) int {
-	fmt.Println("adding a and b prod-2 conflict")
+	fmt.Println("adding a and b dev-experiment")
 	return b + a
 }
 
-// 2. Reverse a string
+// ReverseString reverses a string.
 func ReverseString(s string) string {
 	runes := []rune(s)
 	for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
@@ -21,25 +21,38 @@ func ReverseString(s string) string {
 	return string(runes)
 }
 
-// 3. Check if a number is even
+// IsEven checks whether a number is even.
 func IsEven(n int) bool {
-	return (n & 1) == 0
+	return n%2 == 0
 }
 
-// 4. Convert text to uppercase
+// DEV-only function.
+func IsOdd(n int) bool {
+	return n%2 != 0
+}
+
+// ToUpperCase converts text to uppercase.
 func ToUpperCase(text string) string {
-	fmt.Println("Converting text to uppercase:", text)
+	fmt.Println("dev logging:", text)
 	return strings.ToUpper(text)
 }
 
-// 5. Get current timestamp
+// DEV-only helper.
+func ToLowerCase(text string) string {
+	return strings.ToLower(text)
+}
+
+// GetCurrentTimestamp returns UTC timestamp.
 func GetCurrentTimestamp() string {
-	return time.Now().Format(time.RFC3339)
+	return time.Now().UTC().Format(time.RFC3339)
 }
 
 func main() {
 	fmt.Println(Add(5, 34))
 	fmt.Println(ReverseString("hello"))
 	fmt.Println(IsEven(10))
+	fmt.Println(IsOdd(11))
 	fmt.Println(ToUpperCase("golang"))
+	fmt.Println(ToLowerCase("GOLANG"))
+	fmt.Println(GetCurrentTimestamp())
 }
