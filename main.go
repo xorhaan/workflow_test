@@ -37,6 +37,11 @@ func GetCurrentTimestamp() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }
 
+// UAT-only utility.
+func GetEnvironment() string {
+	return "uat"
+}
+
 func main() {
 	fmt.Println(Add(5, 34))
 	fmt.Println(ReverseString("hello"))
