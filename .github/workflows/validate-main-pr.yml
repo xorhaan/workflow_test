@@ -1,280 +1,3 @@
-
-# name: Validate Main PR Commits
-
-# on:
-#   pull_request:
-#     branches:
-#       - main
-#     types:
-#       - opened
-#       - synchronize
-#       - reopened
-
-# permissions:
-#   contents: read
-#   pull-requests: read
-
-# jobs:
-#   validate-commits:
-#     name: Check commits exist in dev and uat
-#     runs-on: ubuntu-latest
-
-#     steps:
-#       - name: Checkout repository
-#         uses: actions/checkout@v4
-#         with:
-#           fetch-depth: 0
-
-#       - name: Fetch required branches
-#         run: |
-#           git fetch origin dev
-#           git fetch origin uat
-
-#       - name: Check PR commits
-#         env:
-#           PR_NUMBER: ${{ github.event.pull_request.number }}
-#         run: |
-#           set -e
-
-#           echo "Checking commits in PR #$PR_NUMBER..."
-#           echo ""
-
-#           # Get commits that are part of the PR.
-#           # Format: oldest -> newest
-#           PR_COMMITS=$(git rev-list --no-merges --reverse \
-#             "origin/main..${{ github.event.pull_request.head.sha }}")
-
-#           if [ -z "$PR_COMMITS" ]; then
-#             echo "No commits found to check."
-#             exit 0
-#           fi
-
-#           FAILED=0
-
-#           for COMMIT in $PR_COMMITS; do
-#             SHORT_COMMIT=$(git rev-parse --short "$COMMIT")
-#             MESSAGE=$(git log -1 --pretty=format:"%s" "$COMMIT")
-
-#             DEV_OK=0
-#             UAT_OK=0
-
-#             if git merge-base --is-ancestor "$COMMIT" origin/dev; then
-#               DEV_OK=1
-#             fi
-
-#             if git merge-base --is-ancestor "$COMMIT" origin/uat; then
-#               UAT_OK=1
-#             fi
-
-#             if [ "$DEV_OK" -eq 1 ] && [ "$UAT_OK" -eq 1 ]; then
-#               echo "✓ $SHORT_COMMIT - $MESSAGE"
-#               echo "  dev:     ✓"
-#               echo "  uat:     ✓"
-#             else
-#               echo "✗ $SHORT_COMMIT - $MESSAGE"
-              
-#               if [ "$DEV_OK" -eq 1 ]; then
-#                 echo "  dev:     ✓"
-#               else
-#                 echo "  dev:     ✗ MISSING"
-#                 FAILED=1
-#               fi
-
-#               if [ "$UAT_OK" -eq 1 ]; then
-#                 echo "  uat:     ✓"
-#               else
-#                 echo "  uat:     ✗ MISSING"
-#                 FAILED=1
-#               fi
-#             fi
-
-#             echo ""
-#           done
-
-#           if [ "$FAILED" -ne 0 ]; then
-#             echo "========================================"
-#             echo "❌ Main PR validation failed."
-#             echo ""
-#             echo "Every commit in this PR must already exist"
-#             echo "in both dev and uat before merging into main."
-#             echo "========================================"
-#             exit 1
-#           fi
-
-#           echo "========================================"
-#           echo "✅ All PR commits exist in dev and uat."
-#           echo "========================================"
-
-# v2
-
-# name: Create PR TO DEV AND UAT
-
-# on:
-#   push:
-#     branches:
-#       - master
-
-# permissions:
-#   contents: write
-#   pull-requests: write
-
-# jobs:
-#   sync-branches:
-#     runs-on: ubuntu-latest
-
-#     steps:
-#       - name: Checkout
-#         uses: actions/checkout@v4
-#         with:
-#           fetch-depth: 0
-
-#       - name: Fetch branches
-#         run: |
-#           git fetch origin master
-#           git fetch origin dev
-#           git fetch origin uat
-
-#       #
-#       # MASTER -> DEV
-#       #
-#       - name: Check if dev needs updates
-#         id: dev_check
-#         run: |
-#           if git merge-base --is-ancestor origin/master origin/dev; then
-#             echo "needs_pr=false" >> $GITHUB_OUTPUT
-#           else
-#             echo "needs_pr=true" >> $GITHUB_OUTPUT
-#           fi
-
-#       - name: Create Master -> Dev PR
-#         if: steps.dev_check.outputs.needs_pr == 'true'
-#         uses: peter-evans/create-pull-request@v7
-#         with:
-#           token: ${{ secrets.GITHUB_TOKEN }}
-#           branch: auto-sync-master-to-dev
-#           base: dev
-#           title: "Sync master into dev"
-#           body: |
-#             Auto-generated PR to merge latest changes from master into dev.
-#           commit-message: "Sync master into dev"
-
-#       #
-#       # MASTER -> UAT
-#       #
-#       - name: Check if uat needs updates
-#         id: uat_check
-#         run: |
-#           if git merge-base --is-ancestor origin/master origin/uat; then
-#             echo "needs_pr=false" >> $GITHUB_OUTPUT
-#           else
-#             echo "needs_pr=true" >> $GITHUB_OUTPUT
-#           fi
-
-#       - name: Create Master -> UAT PR
-#         if: steps.uat_check.outputs.needs_pr == 'true'
-#         uses: peter-evans/create-pull-request@v7
-#         with:
-#           token: ${{ secrets.GITHUB_TOKEN }}
-#           branch: auto-sync-master-to-uat
-#           base: uat
-#           title: "Sync master into uat"
-#           body: |
-#             Auto-generated PR to merge latest changes from master into uat.
-#           commit-message: "Sync master into uat"
-
-# v3
-
-# name: Create Sync PRs from Main
-
-# on:
-#   pull_request:
-#     branches:
-#       - main
-#     types:
-#       - closed
-
-# permissions:
-#   contents: read
-#   pull-requests: write
-
-# jobs:
-#   create-sync-prs:
-#     # Run only when the PR was merged
-#     if: github.event.pull_request.merged == true
-
-#     runs-on: ubuntu-latest
-
-#     steps:
-#       - name: Checkout repository
-#         uses: actions/checkout@v4
-#         with:
-#           fetch-depth: 0
-
-#       - name: Fetch branches
-#         run: |
-#           git fetch origin main
-#           git fetch origin dev
-#           git fetch origin uat
-
-#       - name: Create PR main -> dev
-#         env:
-#           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-#           MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
-#         run: |
-#           if git merge-base --is-ancestor "$MERGE_SHA" origin/dev; then
-#             echo "dev already contains merge commit $MERGE_SHA"
-#             exit 0
-#           fi
-
-#           EXISTING_PR=$(gh pr list \
-#             --base dev \
-#             --head main \
-#             --state open \
-#             --json number \
-#             --jq 'length')
-
-#           if [ "$EXISTING_PR" -gt 0 ]; then
-#             echo "PR main -> dev already exists"
-#             exit 0
-#           fi
-
-#           gh pr create \
-#             --base dev \
-#             --head main \
-#             --title "Sync main into dev" \
-#             --body "Auto-generated PR to sync latest changes from main into dev."
-
-#       - name: Create PR main -> uat
-#         env:
-#           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-#           MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
-#         run: |
-#           if git merge-base --is-ancestor "$MERGE_SHA" origin/uat; then
-#             echo "uat already contains merge commit $MERGE_SHA"
-#             exit 0
-#           fi
-
-#           EXISTING_PR=$(gh pr list \
-#             --base uat \
-#             --head main \
-#             --state open \
-#             --json number \
-#             --jq 'length')
-
-#           if [ "$EXISTING_PR" -gt 0 ]; then
-#             echo "PR main -> uat already exists"
-#             exit 0
-#           fi
-
-#           gh pr create \
-#             --base uat \
-#             --head main \
-#             --title "Sync main into uat" \
-#             --body "Auto-generated PR to sync latest changes from main into uat."
-
-# v4:
-
-
 name: Create branch sync PRs
 
 on:
@@ -322,7 +45,12 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: |
-          FILES_CHANGED=$(git diff --name-only origin/$TARGET..origin/main | wc -l)
+          # Three-dot diff = changes reachable from main since the merge-base,
+          # matching what the resulting PR would actually show. This avoids
+          # opening PRs whose "files changed" tab is empty even though commits
+          # are missing (e.g. merge commits with no net effect, or changes
+          # already cherry-picked into the target).
+          FILES_CHANGED=$(git diff --name-only origin/$TARGET...origin/main | wc -l | tr -d ' ')
 
           echo "files_changed=$FILES_CHANGED" >> "$GITHUB_OUTPUT"
 
@@ -338,14 +66,13 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: |
-          git fetch origin main "$TARGET"
           MAIN_AHEAD_COUNT=$(
             git rev-list --right-only --count origin/$TARGET...origin/main
           )
           echo "main_ahead_count=$MAIN_AHEAD_COUNT"
           if [ "$MAIN_AHEAD_COUNT" -gt 0 ]; then
             echo "required=true" >> "$GITHUB_OUTPUT"
-            echo "Main contains changes not present in $TARGET"
+            echo "Main contains $MAIN_AHEAD_COUNT commit(s) not present in $TARGET"
           else
             echo "required=false" >> "$GITHUB_OUTPUT"
             echo "$TARGET already contains everything from main"
@@ -360,16 +87,19 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TARGET: ${{ matrix.target }}
         run: |
+          # Prefix-match on the sync branch name; GitHub search's head:
+          # qualifier only does exact matching, so filter locally instead.
           count="$(
             gh pr list \
               --base "$TARGET" \
               --state open \
-              --search "head:sync/main-to-$TARGET/" \
-              --json number \
-              --jq 'length'
+              --limit 100 \
+              --json headRefName \
+              --jq '[.[] | select(.headRefName | startswith("sync/main-to-'"$TARGET"'/"))] | length'
           )"
 
           echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "Found $count existing sync PR(s) targeting $TARGET"
 
       - name: Create disposable sync branch
         if: >
@@ -401,6 +131,11 @@ jobs:
             --base "$TARGET" \
             --head "$SYNC_BRANCH" \
             --title "Sync main into $TARGET" \
-            --body "Automated synchronization from main into $TARGET after PR #$MERGED_PR was merged.
+            --body "$(cat <<EOF
+          Automated synchronization from main into \`$TARGET\` after PR #$MERGED_PR was merged.
 
-          Important: The source is a disposable synchronization branch. If conflicts are resolved in the GitHub UI, main will not be modified."
+          Important: the source (\`$SYNC_BRANCH\`) is a disposable copy of main. If conflicts are resolved in the GitHub UI, main itself will not be modified.
+
+          This branch can be safely deleted once the PR is merged or closed.
+          EOF
+          )"
