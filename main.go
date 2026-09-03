@@ -6,7 +6,7 @@ import (
 )
 
 func Add(a, b int) int {
-	fmt.Println("added", a, b)
+	fmt.Println("hotfix applied")
 	return a + b
 }
 
