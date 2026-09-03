@@ -48,8 +48,7 @@ jobs:
           # Three-dot diff = changes reachable from main since the merge-base,
           # matching what the resulting PR would actually show. This avoids
           # opening PRs whose "files changed" tab is empty even though commits
-          # are missing (e.g. merge commits with no net effect, or changes
-          # already cherry-picked into the target).
+          # are missing (e.g. merge commits with no net effect).
           FILES_CHANGED=$(git diff --name-only origin/$TARGET...origin/main | wc -l | tr -d ' ')
 
           echo "files_changed=$FILES_CHANGED" >> "$GITHUB_OUTPUT"
@@ -78,10 +77,37 @@ jobs:
             echo "$TARGET already contains everything from main"
           fi
 
-      - name: Check for existing sync PR
+      - name: Check for patches already present in target (cherry-picks)
         if: >
           steps.check.outputs.required == 'true' &&
           steps.diff.outputs.required == 'true'
+        id: patch
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          # Commit-SHA comparison (above) misses changes that were cherry-picked
+          # into the target, because cherry-picking produces a new commit SHA.
+          # --cherry-pick compares by patch content instead of SHA, so commits
+          # whose patch already exists in the target are excluded.
+          # Note: this handles cherry-picks but NOT squash-merges (where the
+          # combined patch differs); the file-diff check remains the fallback.
+          MISSING_PATCH_COUNT=$(
+            git rev-list --right-only --cherry-pick --count origin/$TARGET...origin/main
+          )
+          echo "missing_patch_count=$MISSING_PATCH_COUNT"
+          if [ "$MISSING_PATCH_COUNT" -gt 0 ]; then
+            echo "required=true" >> "$GITHUB_OUTPUT"
+            echo "$MISSING_PATCH_COUNT patch(es) from main are truly absent from $TARGET"
+          else
+            echo "required=false" >> "$GITHUB_OUTPUT"
+            echo "All of main's patches are already present in $TARGET (e.g. cherry-picked)"
+          fi
+
+      - name: Check for existing sync PR
+        if: >
+          steps.check.outputs.required == 'true' &&
+          steps.diff.outputs.required == 'true' &&
+          steps.patch.outputs.required == 'true'
         id: existing
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -105,6 +131,7 @@ jobs:
         if: >
           steps.check.outputs.required == 'true' &&
           steps.diff.outputs.required == 'true' &&
+          steps.patch.outputs.required == 'true' &&
           steps.existing.outputs.count == '0'
         id: branch
         env:
