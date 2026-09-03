@@ -7,6 +7,7 @@ import (
 
 func Add(a, b int) int {
 	fmt.Println("both cherry-pick")
+	fmt.Println("pr check1")
 	return a + b
 }
 
