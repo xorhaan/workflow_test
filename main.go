@@ -6,8 +6,8 @@ import (
 )
 
 func Add(a, b int) int {
-	return a + b
 	fmt.Println("added", a, b)
+	return a + b
 }
 
 func NormalizeName(name string) string {
