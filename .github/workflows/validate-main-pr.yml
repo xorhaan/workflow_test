@@ -3,12 +3,12 @@ name: Create branch sync PRs
 on:
   # pull_request_target (not pull_request) so PRs merged from forks still get a
   # write-capable token. Safe here: we never check out or run PR head code —
-  # only the trusted `master` branch is checked out below.
+  # only the trusted `main` branch is checked out below.
   pull_request_target:
     types:
       - closed
     branches:
-      - master
+      - main
 
 permissions:
   contents: write
@@ -19,7 +19,7 @@ jobs:
   create-sync-prs:
     if: >
       github.event.pull_request.merged == true &&
-      github.event.pull_request.base.ref == 'master'
+      github.event.pull_request.base.ref == 'main'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -28,11 +28,11 @@ jobs:
           - dev
           - uat
     concurrency:
-      group: sync-master-to-${{ matrix.target }}
+      group: sync-main-to-${{ matrix.target }}
       cancel-in-progress: false
     env:
       TARGET: ${{ matrix.target }}
-      SYNC_BRANCH: sync/master-to-${{ matrix.target }}
+      SYNC_BRANCH: sync/main-to-${{ matrix.target }}
       # Pushes, PRs and merges made with the default GITHUB_TOKEN do NOT trigger
       # other workflows, so required checks would never run on the sync PR and
       # auto-merge would wait forever (and merges into dev/uat would not trigger
@@ -40,10 +40,10 @@ jobs:
       # SYNC_BOT_TOKEN; GITHUB_TOKEN is only a fallback.
       GH_TOKEN: ${{ secrets.SYNC_BOT_TOKEN || secrets.GITHUB_TOKEN }}
     steps:
-      - name: Checkout master
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
-          ref: master
+          ref: main
           fetch-depth: 0
           token: ${{ secrets.SYNC_BOT_TOKEN || secrets.GITHUB_TOKEN }}
 
@@ -58,8 +58,8 @@ jobs:
           git fetch origin "+refs/heads/$SYNC_BRANCH:refs/remotes/origin/$SYNC_BRANCH" || true
 
       # Content-based check instead of commit/merge-base counting. We simulate
-      # merging master into the target: if the result is identical to the target
-      # tree, master has nothing new for it. This stays correct even if an earlier
+      # merging main into the target: if the result is identical to the target
+      # tree, main has nothing new for it. This stays correct even if an earlier
       # sync PR was squash-merged (squash breaks ancestry, so rev-list/three-dot
       # diff would report the same changes as "missing" forever).
       - name: Check whether synchronization is required
@@ -67,7 +67,7 @@ jobs:
         run: |
           target_tree="$(git rev-parse "origin/$TARGET^{tree}")"
           set +e
-          merged_tree="$(git merge-tree --write-tree "origin/$TARGET" origin/master | head -n1)"
+          merged_tree="$(git merge-tree --write-tree "origin/$TARGET" origin/main | head -n1)"
           rc=${PIPESTATUS[0]}
           set -e
           if [ "$rc" -gt 1 ]; then
@@ -89,22 +89,22 @@ jobs:
           old_sha="$(git rev-parse -q --verify "refs/remotes/origin/$SYNC_BRANCH" || true)"
           stale=false
 
-          if [ -n "$old_sha" ] && ! git merge-base --is-ancestor "$old_sha" origin/master; then
-            # The sync branch has commits that are not on master — someone resolved
-            # conflicts on it. Don't force-push over their work; merge master in.
-            echo "Sync branch has manual conflict-resolution commits; merging master into it."
+          if [ -n "$old_sha" ] && ! git merge-base --is-ancestor "$old_sha" origin/main; then
+            # The sync branch has commits that are not on main — someone resolved
+            # conflicts on it. Don't force-push over their work; merge main in.
+            echo "Sync branch has manual conflict-resolution commits; merging main into it."
             git checkout -B "$SYNC_BRANCH" "$old_sha"
-            if git merge --no-edit origin/master; then
+            if git merge --no-edit origin/main; then
               git push origin "HEAD:refs/heads/$SYNC_BRANCH"
             else
               git merge --abort
               stale=true
-              echo "::warning::Could not merge master into $SYNC_BRANCH automatically; left as is."
+              echo "::warning::Could not merge main into $SYNC_BRANCH automatically; left as is."
             fi
           else
-            # Branch is missing or is just an older snapshot of master: reset it.
+            # Branch is missing or is just an older snapshot of main: reset it.
             # The lease makes the push fail if someone pushed to it meanwhile.
-            git checkout -B "$SYNC_BRANCH" origin/master
+            git checkout -B "$SYNC_BRANCH" origin/main
             git push \
               --force-with-lease="refs/heads/$SYNC_BRANCH:$old_sha" \
               origin \
@@ -133,9 +133,9 @@ jobs:
           MERGED_PR: ${{ github.event.pull_request.number }}
         run: |
           body="$(cat <<EOF
-          Automated synchronization from \`master\` into \`$TARGET\`.
+          Automated synchronization from \`main\` into \`$TARGET\`.
 
-          Last updated after #$MERGED_PR was merged into \`master\`.
+          Last updated after #$MERGED_PR was merged into \`main\`.
 
           The source branch, \`$SYNC_BRANCH\`, is managed automatically:
           - If there are no conflicts, this PR auto-merges (merge commit) once all required checks pass.
@@ -159,7 +159,7 @@ jobs:
             gh pr create \
               --base "$TARGET" \
               --head "$SYNC_BRANCH" \
-              --title "Sync master into $TARGET" \
+              --title "Sync main into $TARGET" \
               --body "$body"
             number="$(
               gh pr list \
@@ -184,7 +184,7 @@ jobs:
           PR: ${{ steps.pr.outputs.number }}
         run: |
           gh pr edit "$PR" --remove-label sync-conflict 2>/dev/null || true
-          # --merge (not --squash) keeps master's history connected to the target,
+          # --merge (not --squash) keeps main's history connected to the target,
           # so future syncs only contain genuinely new changes.
           if ! gh pr merge "$PR" --auto --merge; then
             # Auto-merge can't be enabled when the PR is already mergeable
@@ -213,7 +213,7 @@ jobs:
           gh pr merge "$PR" --disable-auto 2>/dev/null || true
 
           gh pr comment "$PR" --body "$(cat <<EOF
-          :warning: **Merge conflicts** between \`master\` and \`$TARGET\` — this sync PR will not merge automatically.
+          :warning: **Merge conflicts** between \`main\` and \`$TARGET\` — this sync PR will not merge automatically.
 
           @$MERGED_BY ${NOTIFY} please resolve the conflicts on \`$SYNC_BRANCH\` and merge this PR (use **merge commit**, not squash).
           EOF
