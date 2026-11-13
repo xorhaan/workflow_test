@@ -87,48 +87,53 @@ jobs:
         id: branch
         run: |
           old_sha="$(git rev-parse -q --verify "refs/remotes/origin/$SYNC_BRANCH" || true)"
-          updated=false
 
-          if [ -n "$old_sha" ] && ! git merge-base --is-ancestor "$old_sha" origin/main; then
-            # The sync branch has commits that are not on main (a conflict resolution
-            # or an "Update branch" merge). Keep them if main still merges in cleanly.
-            echo "Sync branch has extra commits; merging main into it."
+          # Human commits on the sync branch that are not in main or the target yet,
+          # e.g. a conflict resolution made with "Resolve conflicts". Commits made by
+          # this workflow (github-actions[bot]) are rebuilt on every run.
+          manual=""
+          if [ -n "$old_sha" ]; then
+            manual="$(
+              git log --format='%h %an' "$old_sha" --not origin/main "origin/$TARGET" |
+                grep -v ' github-actions\[bot\]$' || true
+            )"
+          fi
+
+          kept=false
+          if [ -n "$manual" ]; then
+            echo "Keeping manual commits on $SYNC_BRANCH:"
+            echo "$manual"
             git checkout -B "$SYNC_BRANCH" "$old_sha"
             if git merge --no-edit origin/main; then
-              git push origin "HEAD:refs/heads/$SYNC_BRANCH"
-              updated=true
+              kept=true
             else
               git merge --abort
-              # Those commits no longer fit the new main changes. Never leave the PR
-              # on stale content: reset to main below so the PR shows the latest main
-              # and GitHub shows the real conflicts against the target.
-              echo "::warning::Extra commits on $SYNC_BRANCH conflict with new main changes; resetting it to main."
+              echo "::warning::Manual commits on $SYNC_BRANCH conflict with new main changes; rebuilding from main."
             fi
           fi
-
-          if [ "$updated" = false ]; then
-            # The lease makes the push fail if someone pushed to the branch meanwhile.
+          if [ "$kept" = false ]; then
             git checkout -B "$SYNC_BRANCH" origin/main
-            git push \
-              --force-with-lease="refs/heads/$SYNC_BRANCH:$old_sha" \
-              origin \
-              "HEAD:refs/heads/$SYNC_BRANCH"
           fi
 
-          # Does the sync branch merge cleanly into the target? Same check GitHub makes.
-          set +e
-          git merge-tree --write-tree "origin/$TARGET" HEAD > /dev/null
-          rc=$?
-          set -e
-          if [ "$rc" -gt 1 ]; then
-            echo "::error::git merge-tree failed (exit $rc)"
-            exit 1
-          fi
-          if [ "$rc" -eq 1 ]; then
-            echo "conflicts=true" >> "$GITHUB_OUTPUT"
-          else
+          # Merge the target into the sync branch here, using git's own merge.
+          # Feature branches merged into both main and the target give the two
+          # branches several merge bases ("criss-cross" history). Git resolves that
+          # correctly, but GitHub's mergeability check can pick one stale base and
+          # report conflicts that don't exist. Once the target is merged in, the PR's
+          # only merge base is the target's tip, so GitHub sees what we see.
+          if git merge --no-edit -m "Merge $TARGET into $SYNC_BRANCH" "origin/$TARGET"; then
             echo "conflicts=false" >> "$GITHUB_OUTPUT"
+          else
+            # Real conflicts: push main as is and leave them for a human in the PR.
+            git merge --abort
+            echo "conflicts=true" >> "$GITHUB_OUTPUT"
           fi
+
+          # The lease makes the push fail if someone pushed to the branch meanwhile.
+          git push \
+            --force-with-lease="refs/heads/$SYNC_BRANCH:$old_sha" \
+            origin \
+            "HEAD:refs/heads/$SYNC_BRANCH"
 
       - name: Create or update synchronization PR
         if: steps.check.outputs.required == 'true'
@@ -181,6 +186,7 @@ jobs:
           echo "number=$number" >> "$GITHUB_OUTPUT"
 
       - name: Enable auto-merge (no conflicts)
+        id: automerge
         if: >
           steps.check.outputs.required == 'true' &&
           steps.branch.outputs.conflicts == 'false'
@@ -190,19 +196,21 @@ jobs:
           gh pr edit "$PR" --remove-label sync-conflict 2>/dev/null || true
           # --merge (not --squash) keeps main's history connected to the target,
           # so future syncs only contain genuinely new changes.
-          if ! gh pr merge "$PR" --auto --merge; then
-            # Auto-merge can't be enabled when the PR is already mergeable
-            # (no pending required checks); merge directly in that case.
-            # Branch protection still blocks this if required checks aren't met.
-            gh pr merge "$PR" --merge
+          # If auto-merge can't be enabled (e.g. the PR is already mergeable with no
+          # pending required checks), merge directly. Branch protection still applies.
+          if gh pr merge "$PR" --auto --merge || gh pr merge "$PR" --merge; then
+            echo "Auto-merge requested for PR #$PR into $TARGET." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "failed=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Could not merge or enable auto-merge for PR #$PR."
           fi
-          echo "Auto-merge requested for PR #$PR into $TARGET." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Flag conflicts and notify
         if: >
           steps.check.outputs.required == 'true' &&
-          steps.branch.outputs.conflicts == 'true'
+          (steps.branch.outputs.conflicts == 'true' || steps.automerge.outputs.failed == 'true')
         env:
+          CONFLICTS: ${{ steps.branch.outputs.conflicts }}
           PR: ${{ steps.pr.outputs.number }}
           MERGED_BY: ${{ github.event.pull_request.merged_by.login }}
           # Optional repo variable, e.g. "@my-org/backend-team" or "@alice @bob".
@@ -216,12 +224,19 @@ jobs:
           gh pr edit "$PR" --add-assignee "$MERGED_BY" || true
           gh pr merge "$PR" --disable-auto 2>/dev/null || true
 
+          if [ "$CONFLICTS" = true ]; then
+            problem=":warning: **Merge conflicts** between \`main\` and \`$TARGET\` — this sync PR will not merge automatically."
+            ask="please resolve the conflicts on \`$SYNC_BRANCH\` and merge this PR"
+          else
+            problem=":warning: This sync PR could not be merged automatically (see the workflow run: checks, branch protection or repo auto-merge setting)."
+            ask="please check and merge this PR"
+          fi
           gh pr comment "$PR" --body "$(cat <<EOF
-          :warning: **Merge conflicts** between \`main\` and \`$TARGET\` — this sync PR will not merge automatically.
+          $problem
 
-          @$MERGED_BY ${NOTIFY} please resolve the conflicts on \`$SYNC_BRANCH\` and merge this PR (use **merge commit**, not squash).
+          @$MERGED_BY ${NOTIFY} $ask (use **merge commit**, not squash).
           EOF
           )"
 
-          echo "::warning::Sync PR #$PR into $TARGET has merge conflicts and needs manual resolution."
-          echo ":warning: Sync PR #$PR into \`$TARGET\` has conflicts — left open for manual resolution." >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning::Sync PR #$PR into $TARGET needs manual attention."
+          echo ":warning: Sync PR #$PR into \`$TARGET\` needs manual attention — left open." >> "$GITHUB_STEP_SUMMARY"
