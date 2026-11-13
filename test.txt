@@ -1,1 +1,2 @@
 fix z
+Squash sync test
