@@ -1,4 +1,5 @@
 fix z
+Squash sync test
 dev:
 x
 y
