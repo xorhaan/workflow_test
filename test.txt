@@ -3,3 +3,5 @@ conflict sync test
 lulz
 haha
 new
+
+more features
