@@ -1,2 +1,2 @@
 fix z
-Squash sync test
+conflict sync test
