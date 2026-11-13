@@ -1,7 +1,10 @@
 name: Create branch sync PRs
 
 on:
-  pull_request:
+  # pull_request_target (not pull_request) so PRs merged from forks still get a
+  # write-capable token. Safe here: we never check out or run PR head code —
+  # only the trusted `main` branch is checked out below.
+  pull_request_target:
     types:
       - closed
     branches:
@@ -10,132 +13,211 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  issues: write # needed to create/apply the conflict label
 
 jobs:
   create-sync-prs:
     if: >
       github.event.pull_request.merged == true &&
       github.event.pull_request.base.ref == 'main'
-
     runs-on: ubuntu-latest
-
     strategy:
+      fail-fast: false
       matrix:
         target:
           - dev
           - uat
-
     concurrency:
       group: sync-main-to-${{ matrix.target }}
       cancel-in-progress: false
-
+    env:
+      TARGET: ${{ matrix.target }}
+      SYNC_BRANCH: sync/main-to-${{ matrix.target }}
+      # Pushes, PRs and merges made with the default GITHUB_TOKEN do NOT trigger
+      # other workflows, so required checks would never run on the sync PR and
+      # auto-merge would wait forever (and merges into dev/uat would not trigger
+      # deploys). Provide a GitHub App token or fine-grained PAT as
+      # SYNC_BOT_TOKEN; GITHUB_TOKEN is only a fallback.
+      GH_TOKEN: ${{ secrets.SYNC_BOT_TOKEN || secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout main
         uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
+          token: ${{ secrets.SYNC_BOT_TOKEN || secrets.GITHUB_TOKEN }}
 
-      - name: Fetch target branch
+      - name: Configure git identity
         run: |
-          git fetch origin "${{ matrix.target }}"
-      
-      - name: Check for actual file differences
-        id: diff
-        env:
-          TARGET: ${{ matrix.target }}
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch target and sync branches
         run: |
-          # Three-dot diff = changes reachable from main since the merge-base,
-          # matching what the resulting PR would actually show. This avoids
-          # opening PRs whose "files changed" tab is empty even though commits
-          # are missing (e.g. merge commits with no net effect, or changes
-          # already cherry-picked into the target).
-          FILES_CHANGED=$(git diff --name-only origin/$TARGET...origin/main | wc -l | tr -d ' ')
+          git fetch origin "+refs/heads/$TARGET:refs/remotes/origin/$TARGET"
+          git fetch origin "+refs/heads/$SYNC_BRANCH:refs/remotes/origin/$SYNC_BRANCH" || true
 
-          echo "files_changed=$FILES_CHANGED" >> "$GITHUB_OUTPUT"
-
-          if [ "$FILES_CHANGED" -eq 0 ]; then
-            echo "required=false" >> "$GITHUB_OUTPUT"
-            echo "No effective changes to sync."
-          else
-            echo "required=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Check whether target is missing changes from main
+      # Content-based check instead of commit/merge-base counting. We simulate
+      # merging main into the target: if the result is identical to the target
+      # tree, main has nothing new for it. This stays correct even if an earlier
+      # sync PR was squash-merged (squash breaks ancestry, so rev-list/three-dot
+      # diff would report the same changes as "missing" forever).
+      - name: Check whether synchronization is required
         id: check
-        env:
-          TARGET: ${{ matrix.target }}
         run: |
-          MAIN_AHEAD_COUNT=$(
-            git rev-list --right-only --count origin/$TARGET...origin/main
-          )
-          echo "main_ahead_count=$MAIN_AHEAD_COUNT"
-          if [ "$MAIN_AHEAD_COUNT" -gt 0 ]; then
-            echo "required=true" >> "$GITHUB_OUTPUT"
-            echo "Main contains $MAIN_AHEAD_COUNT commit(s) not present in $TARGET"
-          else
+          target_tree="$(git rev-parse "origin/$TARGET^{tree}")"
+          set +e
+          merged_tree="$(git merge-tree --write-tree "origin/$TARGET" origin/main | head -n1)"
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -gt 1 ]; then
+            echo "::error::git merge-tree failed (exit $rc)"
+            exit 1
+          fi
+          if [ "$rc" -eq 0 ] && [ "$merged_tree" = "$target_tree" ]; then
             echo "required=false" >> "$GITHUB_OUTPUT"
-            echo "$TARGET already contains everything from main"
+            echo "No effective synchronization is required for $TARGET."
+          else
+            echo "required=true" >> "$GITHUB_OUTPUT"
+            echo "Synchronization is required for $TARGET."
           fi
 
-      - name: Check for existing sync PR
-        if: >
-          steps.check.outputs.required == 'true' &&
-          steps.diff.outputs.required == 'true'
-        id: existing
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TARGET: ${{ matrix.target }}
-        run: |
-          # Prefix-match on the sync branch name; GitHub search's head:
-          # qualifier only does exact matching, so filter locally instead.
-          count="$(
-            gh pr list \
-              --base "$TARGET" \
-              --state open \
-              --limit 100 \
-              --json headRefName \
-              --jq '[.[] | select(.headRefName | startswith("sync/main-to-'"$TARGET"'/"))] | length'
-          )"
-
-          echo "count=$count" >> "$GITHUB_OUTPUT"
-          echo "Found $count existing sync PR(s) targeting $TARGET"
-
-      - name: Create disposable sync branch
-        if: >
-          steps.check.outputs.required == 'true' &&
-          steps.diff.outputs.required == 'true' &&
-          steps.existing.outputs.count == '0'
+      - name: Update synchronization branch
+        if: steps.check.outputs.required == 'true'
         id: branch
-        env:
-          TARGET: ${{ matrix.target }}
-          RUN_ID: ${{ github.run_id }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
-          branch="sync/main-to-$TARGET/$RUN_ID-$RUN_ATTEMPT"
+          old_sha="$(git rev-parse -q --verify "refs/remotes/origin/$SYNC_BRANCH" || true)"
+          stale=false
 
-          git checkout -B "$branch" origin/main
-          git push origin "$branch"
+          if [ -n "$old_sha" ] && ! git merge-base --is-ancestor "$old_sha" origin/main; then
+            # The sync branch has commits that are not on main — someone resolved
+            # conflicts on it. Don't force-push over their work; merge main in.
+            echo "Sync branch has manual conflict-resolution commits; merging main into it."
+            git checkout -B "$SYNC_BRANCH" "$old_sha"
+            if git merge --no-edit origin/main; then
+              git push origin "HEAD:refs/heads/$SYNC_BRANCH"
+            else
+              git merge --abort
+              stale=true
+              echo "::warning::Could not merge main into $SYNC_BRANCH automatically; left as is."
+            fi
+          else
+            # Branch is missing or is just an older snapshot of main: reset it.
+            # The lease makes the push fail if someone pushed to it meanwhile.
+            git checkout -B "$SYNC_BRANCH" origin/main
+            git push \
+              --force-with-lease="refs/heads/$SYNC_BRANCH:$old_sha" \
+              origin \
+              "HEAD:refs/heads/$SYNC_BRANCH"
+          fi
 
-          echo "name=$branch" >> "$GITHUB_OUTPUT"
+          # Does the (possibly manually resolved) sync branch merge cleanly into the target?
+          set +e
+          git merge-tree --write-tree "origin/$TARGET" HEAD > /dev/null
+          rc=$?
+          set -e
+          if [ "$rc" -gt 1 ]; then
+            echo "::error::git merge-tree failed (exit $rc)"
+            exit 1
+          fi
+          if [ "$rc" -eq 1 ] || [ "$stale" = true ]; then
+            echo "conflicts=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "conflicts=false" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Create synchronization PR
-        if: steps.branch.outputs.name != ''
+      - name: Create or update synchronization PR
+        if: steps.check.outputs.required == 'true'
+        id: pr
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TARGET: ${{ matrix.target }}
-          SYNC_BRANCH: ${{ steps.branch.outputs.name }}
           MERGED_PR: ${{ github.event.pull_request.number }}
         run: |
-          gh pr create \
-            --base "$TARGET" \
-            --head "$SYNC_BRANCH" \
-            --title "Sync main into $TARGET" \
-            --body "$(cat <<EOF
-          Automated synchronization from main into \`$TARGET\` after PR #$MERGED_PR was merged.
+          body="$(cat <<EOF
+          Automated synchronization from \`main\` into \`$TARGET\`.
 
-          Important: the source (\`$SYNC_BRANCH\`) is a disposable copy of main. If conflicts are resolved in the GitHub UI, main itself will not be modified.
+          Last updated after #$MERGED_PR was merged into \`main\`.
 
-          This branch can be safely deleted once the PR is merged or closed.
+          The source branch, \`$SYNC_BRANCH\`, is managed automatically:
+          - If there are no conflicts, this PR auto-merges (merge commit) once all required checks pass.
+          - If there are conflicts, it stays open and is labelled \`sync-conflict\`. Resolve them on \`$SYNC_BRANCH\`
+            (e.g. the "Resolve conflicts" button on this PR); the workflow will keep your resolution on later updates.
+
+          Do not add development commits to the synchronization branch. **Do not squash-merge this PR.**
           EOF
           )"
+
+          number="$(
+            gh pr list \
+              --base "$TARGET" \
+              --head "$SYNC_BRANCH" \
+              --state open \
+              --json number \
+              --jq '.[0].number // empty'
+          )"
+
+          if [ -z "$number" ]; then
+            gh pr create \
+              --base "$TARGET" \
+              --head "$SYNC_BRANCH" \
+              --title "Sync main into $TARGET" \
+              --body "$body"
+            number="$(
+              gh pr list \
+                --base "$TARGET" \
+                --head "$SYNC_BRANCH" \
+                --state open \
+                --json number \
+                --jq '.[0].number'
+            )"
+            echo "Created synchronization PR #$number."
+          else
+            gh pr edit "$number" --body "$body"
+            echo "Updated existing synchronization PR #$number."
+          fi
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+
+      - name: Enable auto-merge (no conflicts)
+        if: >
+          steps.check.outputs.required == 'true' &&
+          steps.branch.outputs.conflicts == 'false'
+        env:
+          PR: ${{ steps.pr.outputs.number }}
+        run: |
+          gh pr edit "$PR" --remove-label sync-conflict 2>/dev/null || true
+          # --merge (not --squash) keeps main's history connected to the target,
+          # so future syncs only contain genuinely new changes.
+          if ! gh pr merge "$PR" --auto --merge; then
+            # Auto-merge can't be enabled when the PR is already mergeable
+            # (no pending required checks); merge directly in that case.
+            # Branch protection still blocks this if required checks aren't met.
+            gh pr merge "$PR" --merge
+          fi
+          echo "Auto-merge requested for PR #$PR into $TARGET." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Flag conflicts and notify
+        if: >
+          steps.check.outputs.required == 'true' &&
+          steps.branch.outputs.conflicts == 'true'
+        env:
+          PR: ${{ steps.pr.outputs.number }}
+          MERGED_BY: ${{ github.event.pull_request.merged_by.login }}
+          # Optional repo variable, e.g. "@my-org/backend-team" or "@alice @bob".
+          NOTIFY: ${{ vars.SYNC_CONFLICT_NOTIFY }}
+        run: |
+          gh label create sync-conflict \
+            --color B60205 \
+            --description "Automated branch sync has merge conflicts" \
+            --force
+          gh pr edit "$PR" --add-label sync-conflict
+          gh pr edit "$PR" --add-assignee "$MERGED_BY" || true
+          gh pr merge "$PR" --disable-auto 2>/dev/null || true
+
+          gh pr comment "$PR" --body "$(cat <<EOF
+          :warning: **Merge conflicts** between \`main\` and \`$TARGET\` — this sync PR will not merge automatically.
+
+          @$MERGED_BY ${NOTIFY} please resolve the conflicts on \`$SYNC_BRANCH\` and merge this PR (use **merge commit**, not squash).
+          EOF
+          )"
+
+          echo "::warning::Sync PR #$PR into $TARGET has merge conflicts and needs manual resolution."
+          echo ":warning: Sync PR #$PR into \`$TARGET\` has conflicts — left open for manual resolution." >> "$GITHUB_STEP_SUMMARY"
