@@ -1,9 +1,2 @@
-fix z
-conflict sync test
-lulz
-haha
-new
-
-more features
-feat uat
-new
+feat 1
+feat 2
