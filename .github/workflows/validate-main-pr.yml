@@ -87,23 +87,27 @@ jobs:
         id: branch
         run: |
           old_sha="$(git rev-parse -q --verify "refs/remotes/origin/$SYNC_BRANCH" || true)"
-          stale=false
+          updated=false
 
           if [ -n "$old_sha" ] && ! git merge-base --is-ancestor "$old_sha" origin/main; then
-            # The sync branch has commits that are not on main — someone resolved
-            # conflicts on it. Don't force-push over their work; merge main in.
-            echo "Sync branch has manual conflict-resolution commits; merging main into it."
+            # The sync branch has commits that are not on main (a conflict resolution
+            # or an "Update branch" merge). Keep them if main still merges in cleanly.
+            echo "Sync branch has extra commits; merging main into it."
             git checkout -B "$SYNC_BRANCH" "$old_sha"
             if git merge --no-edit origin/main; then
               git push origin "HEAD:refs/heads/$SYNC_BRANCH"
+              updated=true
             else
               git merge --abort
-              stale=true
-              echo "::warning::Could not merge main into $SYNC_BRANCH automatically; left as is."
+              # Those commits no longer fit the new main changes. Never leave the PR
+              # on stale content: reset to main below so the PR shows the latest main
+              # and GitHub shows the real conflicts against the target.
+              echo "::warning::Extra commits on $SYNC_BRANCH conflict with new main changes; resetting it to main."
             fi
-          else
-            # Branch is missing or is just an older snapshot of main: reset it.
-            # The lease makes the push fail if someone pushed to it meanwhile.
+          fi
+
+          if [ "$updated" = false ]; then
+            # The lease makes the push fail if someone pushed to the branch meanwhile.
             git checkout -B "$SYNC_BRANCH" origin/main
             git push \
               --force-with-lease="refs/heads/$SYNC_BRANCH:$old_sha" \
@@ -111,7 +115,7 @@ jobs:
               "HEAD:refs/heads/$SYNC_BRANCH"
           fi
 
-          # Does the (possibly manually resolved) sync branch merge cleanly into the target?
+          # Does the sync branch merge cleanly into the target? Same check GitHub makes.
           set +e
           git merge-tree --write-tree "origin/$TARGET" HEAD > /dev/null
           rc=$?
@@ -120,7 +124,7 @@ jobs:
             echo "::error::git merge-tree failed (exit $rc)"
             exit 1
           fi
-          if [ "$rc" -eq 1 ] || [ "$stale" = true ]; then
+          if [ "$rc" -eq 1 ]; then
             echo "conflicts=true" >> "$GITHUB_OUTPUT"
           else
             echo "conflicts=false" >> "$GITHUB_OUTPUT"
