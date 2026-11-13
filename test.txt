@@ -1,5 +1,5 @@
 fix z
-Squash sync test
-dev:
-x
-y
+conflict sync test
+lolz
+haha
+new
