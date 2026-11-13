@@ -1,9 +1,4 @@
-fix z
-conflict sync test
-lulz
-haha
-new
-
-more features
-feat dev
-new
+feat 1
+feat 2
+feat 3
+feat 4
