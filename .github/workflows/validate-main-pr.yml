@@ -1,14 +1,30 @@
-name: Create branch sync PRs
+name: Sync main into dev and uat
+
+# Keeps dev and uat from falling behind main.
+#
+# Whenever main changes (PR merge of any kind, squash, cherry-pick, or a direct
+# push), each target branch is checked independently:
+#   - target already has everything main has  -> nothing happens
+#   - main merges cleanly (same result as `git merge main` on the command
+#     line)                                     -> sync PR is opened/updated and auto-merged
+#   - real conflicts                            -> sync PR stays open, is labelled
+#     `sync-conflict` and the person who pushed is notified. Nothing is resolved
+#     automatically.
+#
+# The PR comes from a dedicated sync/main-to-<target> branch, never from main
+# itself, so resolving conflicts in the GitHub UI can never write dev/uat code
+# into main.
+#
+# Repo setup: allow auto-merge + merge commits; add a SYNC_BOT_TOKEN secret (GitHub
+# App token or fine-grained PAT) if dev/uat have required checks or deploy workflows.
 
 on:
-  # pull_request_target (not pull_request) so PRs merged from forks still get a
-  # write-capable token. Safe here: we never check out or run PR head code —
-  # only the trusted `main` branch is checked out below.
-  pull_request_target:
-    types:
-      - closed
+  # `push` rather than `pull_request: closed`, so hotfixes pushed straight to
+  # main are covered too. It also always runs with a write-capable token.
+  push:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -16,10 +32,7 @@ permissions:
   issues: write # needed to create/apply the conflict label
 
 jobs:
-  create-sync-prs:
-    if: >
-      github.event.pull_request.merged == true &&
-      github.event.pull_request.base.ref == 'main'
+  sync:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -36,8 +49,7 @@ jobs:
       # Pushes, PRs and merges made with the default GITHUB_TOKEN do NOT trigger
       # other workflows, so required checks would never run on the sync PR and
       # auto-merge would wait forever (and merges into dev/uat would not trigger
-      # deploys). Provide a GitHub App token or fine-grained PAT as
-      # SYNC_BOT_TOKEN; GITHUB_TOKEN is only a fallback.
+      # deploys). GITHUB_TOKEN is only a fallback.
       GH_TOKEN: ${{ secrets.SYNC_BOT_TOKEN || secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout main
@@ -57,29 +69,47 @@ jobs:
           git fetch origin "+refs/heads/$TARGET:refs/remotes/origin/$TARGET"
           git fetch origin "+refs/heads/$SYNC_BRANCH:refs/remotes/origin/$SYNC_BRANCH" || true
 
-      # Content-based check instead of commit/merge-base counting. We simulate
-      # merging main into the target: if the result is identical to the target
-      # tree, main has nothing new for it. This stays correct even if an earlier
-      # sync PR was squash-merged (squash breaks ancestry, so rev-list/three-dot
-      # diff would report the same changes as "missing" forever).
+      # Content-based check: simulate `git merge main` on the target. If the
+      # result is identical to the target, main has nothing new for it. Unlike
+      # counting commits, this is correct for squash merges and cherry-picks,
+      # where the same change exists under a different commit id.
       - name: Check whether synchronization is required
         id: check
         run: |
           target_tree="$(git rev-parse "origin/$TARGET^{tree}")"
           set +e
-          merged_tree="$(git merge-tree --write-tree "origin/$TARGET" origin/main | head -n1)"
-          rc=${PIPESTATUS[0]}
+          out="$(git merge-tree --write-tree "origin/$TARGET" origin/main)"
+          rc=$?
           set -e
           if [ "$rc" -gt 1 ]; then
             echo "::error::git merge-tree failed (exit $rc)"
             exit 1
           fi
+          merged_tree="${out%%$'\n'*}"
           if [ "$rc" -eq 0 ] && [ "$merged_tree" = "$target_tree" ]; then
             echo "required=false" >> "$GITHUB_OUTPUT"
-            echo "No effective synchronization is required for $TARGET."
+            echo "$TARGET already contains everything in main."
           else
             echo "required=true" >> "$GITHUB_OUTPUT"
             echo "Synchronization is required for $TARGET."
+          fi
+
+      # The target caught up some other way (e.g. someone merged main by hand):
+      # an open sync PR has nothing left to do.
+      - name: Close obsolete synchronization PR
+        if: steps.check.outputs.required == 'false'
+        run: |
+          number="$(
+            gh pr list \
+              --base "$TARGET" \
+              --head "$SYNC_BRANCH" \
+              --state open \
+              --json number \
+              --jq '.[0].number // empty'
+          )"
+          if [ -n "$number" ]; then
+            gh pr close "$number" \
+              --comment "\`$TARGET\` already contains everything in \`main\`; this sync is no longer needed."
           fi
 
       - name: Update synchronization branch
@@ -89,8 +119,8 @@ jobs:
           old_sha="$(git rev-parse -q --verify "refs/remotes/origin/$SYNC_BRANCH" || true)"
 
           # Human commits on the sync branch that are not in main or the target yet,
-          # e.g. a conflict resolution made with "Resolve conflicts". Commits made by
-          # this workflow (github-actions[bot]) are rebuilt on every run.
+          # i.e. a conflict resolution that has not been merged. Commits made by this
+          # workflow (github-actions[bot]) are rebuilt on every run.
           manual=""
           if [ -n "$old_sha" ]; then
             manual="$(
@@ -115,42 +145,82 @@ jobs:
             git checkout -B "$SYNC_BRANCH" origin/main
           fi
 
-          # Merge the target into the sync branch here, using git's own merge.
+          # Merge the target into the sync branch here, using git's own merge, so the
+          # outcome is exactly what `git merge` gives on the command line.
           # Feature branches merged into both main and the target give the two
           # branches several merge bases ("criss-cross" history). Git resolves that
           # correctly, but GitHub's mergeability check can pick one stale base and
           # report conflicts that don't exist. Once the target is merged in, the PR's
           # only merge base is the target's tip, so GitHub sees what we see.
-          if git merge --no-edit -m "Merge $TARGET into $SYNC_BRANCH" "origin/$TARGET"; then
-            echo "conflicts=false" >> "$GITHUB_OUTPUT"
-          else
-            # A file deleted on main but changed on the target only in whitespace
-            # (e.g. the end-of-file newline GitHub's web conflict editor adds) is a
-            # modify/delete conflict for git, which GitHub's web editor can't resolve.
-            # The change is meaningless, so accept the deletion automatically.
+          conflicts=false
+          if ! git merge --no-edit -m "Merge $TARGET into $SYNC_BRANCH" "origin/$TARGET"; then
+            # One narrow exception to "never resolve conflicts": a file deleted on
+            # main whose only change on the target is whitespace at line ends
+            # (GitHub's web conflict editor appends a final newline). Git calls
+            # that a modify/delete conflict and the web editor cannot resolve it.
             base="$(git merge-base HEAD "origin/$TARGET")"
             git diff --name-only -z --diff-filter=U | while IFS= read -r -d '' f; do
               if ! git cat-file -e "HEAD:$f" 2>/dev/null &&
                  git cat-file -e "$base:$f" 2>/dev/null &&
-                 [ -z "$(git diff -w "$base" "origin/$TARGET" -- "$f")" ]; then
-                echo "Auto-resolving $f: deleted on main, only whitespace changed on $TARGET."
+                 [ -z "$(git diff --ignore-space-at-eol --ignore-cr-at-eol "$base" "origin/$TARGET" -- "$f")" ]; then
+                echo "Accepting deletion of $f: only line-end whitespace changed on $TARGET."
                 git rm -q -- "$f"
               fi
             done
 
             if [ -z "$(git diff --name-only --diff-filter=U)" ]; then
               git commit --no-edit
-              echo "conflicts=false" >> "$GITHUB_OUTPUT"
             else
-              # Real conflicts: push main as is and leave them for a human in the PR.
-              {
-                echo "files<<CONFLICT_FILES_EOF"
-                git diff --name-only --diff-filter=U
-                echo "CONFLICT_FILES_EOF"
-              } >> "$GITHUB_OUTPUT"
+              conflict_files="$(git diff --name-only --diff-filter=U)"
               git merge --abort
-              echo "conflicts=true" >> "$GITHUB_OUTPUT"
+
+              # Squash merges and cherry-picks copy a change without recording where
+              # it came from, so git's merge base can be far older than what the
+              # target really contains, and later edits to the same lines look like
+              # conflicts. Find the newest main commit whose content the target
+              # already has in full and merge again with that as the base: this
+              # applies exactly "what main changed since then" to the target.
+              # It is a normal three-way merge; anything both sides changed
+              # differently since that point is still a conflict.
+              target_tree="$(git rev-parse "origin/$TARGET^{tree}")"
+              better_base=""
+              for c in $(git rev-list --first-parent --max-count=200 origin/main); do
+                if out="$(git merge-tree --write-tree "origin/$TARGET" "$c" 2>/dev/null)" &&
+                   [ "${out%%$'\n'*}" = "$target_tree" ]; then
+                  better_base="$c"
+                  break
+                fi
+              done
+
+              if [ -n "$better_base" ] &&
+                 out="$(git merge-tree --write-tree --merge-base="$better_base" HEAD "origin/$TARGET")"; then
+                echo "Merged cleanly using main commit ${better_base:0:7} (already contained in $TARGET) as the base."
+                commit="$(
+                  git commit-tree "${out%%$'\n'*}" -p HEAD -p "origin/$TARGET" \
+                    -m "Merge $TARGET into $SYNC_BRANCH"
+                )"
+                git reset -q --hard "$commit"
+              else
+                # Real conflicts: leave them for a human to resolve in the PR.
+                {
+                  echo "files<<CONFLICT_FILES_EOF"
+                  echo "$conflict_files"
+                  echo "CONFLICT_FILES_EOF"
+                } >> "$GITHUB_OUTPUT"
+                conflicts=true
+              fi
             fi
+          fi
+          echo "conflicts=$conflicts" >> "$GITHUB_OUTPUT"
+
+          # Nothing new compared with what is already on the sync branch (e.g. a
+          # re-run): leave it alone so the PR's checks are not restarted.
+          if [ -n "$old_sha" ] &&
+             [ "$(git rev-parse 'HEAD^{tree}')" = "$(git rev-parse "$old_sha^{tree}")" ] &&
+             git merge-base --is-ancestor origin/main "$old_sha" &&
+             { [ "$conflicts" = true ] || git merge-base --is-ancestor "origin/$TARGET" "$old_sha"; }; then
+            echo "$SYNC_BRANCH is already up to date."
+            exit 0
           fi
 
           # The lease makes the push fail if someone pushed to the branch meanwhile.
@@ -162,18 +232,17 @@ jobs:
       - name: Create or update synchronization PR
         if: steps.check.outputs.required == 'true'
         id: pr
-        env:
-          MERGED_PR: ${{ github.event.pull_request.number }}
         run: |
+          main_sha="$(git rev-parse --short origin/main)"
           body="$(cat <<EOF
           Automated synchronization from \`main\` into \`$TARGET\`.
 
-          Last updated after #$MERGED_PR was merged into \`main\`.
+          Last updated for \`main\` at $main_sha.
 
           The source branch, \`$SYNC_BRANCH\`, is managed automatically:
           - If there are no conflicts, this PR auto-merges (merge commit) once all required checks pass.
           - If there are conflicts, it stays open and is labelled \`sync-conflict\`. Resolve them on \`$SYNC_BRANCH\`
-            (e.g. the "Resolve conflicts" button on this PR); the workflow will keep your resolution on later updates.
+            and merge this PR; the workflow keeps your resolution if \`main\` changes again in the meantime.
 
           Do not add development commits to the synchronization branch. **Do not squash-merge this PR.**
           EOF
@@ -237,16 +306,16 @@ jobs:
           CONFLICTS: ${{ steps.branch.outputs.conflicts }}
           FILES: ${{ steps.branch.outputs.files }}
           PR: ${{ steps.pr.outputs.number }}
-          MERGED_BY: ${{ github.event.pull_request.merged_by.login }}
+          PUSHED_BY: ${{ github.actor }}
           # Optional repo variable, e.g. "@my-org/backend-team" or "@alice @bob".
           NOTIFY: ${{ vars.SYNC_CONFLICT_NOTIFY }}
         run: |
           gh label create sync-conflict \
             --color B60205 \
-            --description "Automated branch sync has merge conflicts" \
+            --description "Automated branch sync needs manual attention" \
             --force
           gh pr edit "$PR" --add-label sync-conflict
-          gh pr edit "$PR" --add-assignee "$MERGED_BY" || true
+          gh pr edit "$PR" --add-assignee "$PUSHED_BY" || true
           gh pr merge "$PR" --disable-auto 2>/dev/null || true
 
           if [ "$CONFLICTS" = true ]; then
@@ -257,7 +326,7 @@ jobs:
           Conflicting files:
           $files
 
-          GitHub's web editor can't resolve deleted or renamed files. To resolve locally:
+          Resolve with the **Resolve conflicts** button, or locally (needed for deleted or renamed files, which the web editor cannot handle):
           \`\`\`bash
           git fetch origin
           git checkout -B $SYNC_BRANCH origin/$SYNC_BRANCH
@@ -276,7 +345,7 @@ jobs:
           gh pr comment "$PR" --body "$(cat <<EOF
           $problem
 
-          @$MERGED_BY ${NOTIFY} $ask (use **merge commit**, not squash).
+          @$PUSHED_BY ${NOTIFY} $ask (use **merge commit**, not squash).
 
           $howto
           EOF
