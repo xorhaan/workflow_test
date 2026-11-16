@@ -124,9 +124,33 @@ jobs:
           if git merge --no-edit -m "Merge $TARGET into $SYNC_BRANCH" "origin/$TARGET"; then
             echo "conflicts=false" >> "$GITHUB_OUTPUT"
           else
-            # Real conflicts: push main as is and leave them for a human in the PR.
-            git merge --abort
-            echo "conflicts=true" >> "$GITHUB_OUTPUT"
+            # A file deleted on main but changed on the target only in whitespace
+            # (e.g. the end-of-file newline GitHub's web conflict editor adds) is a
+            # modify/delete conflict for git, which GitHub's web editor can't resolve.
+            # The change is meaningless, so accept the deletion automatically.
+            base="$(git merge-base HEAD "origin/$TARGET")"
+            git diff --name-only -z --diff-filter=U | while IFS= read -r -d '' f; do
+              if ! git cat-file -e "HEAD:$f" 2>/dev/null &&
+                 git cat-file -e "$base:$f" 2>/dev/null &&
+                 [ -z "$(git diff -w "$base" "origin/$TARGET" -- "$f")" ]; then
+                echo "Auto-resolving $f: deleted on main, only whitespace changed on $TARGET."
+                git rm -q -- "$f"
+              fi
+            done
+
+            if [ -z "$(git diff --name-only --diff-filter=U)" ]; then
+              git commit --no-edit
+              echo "conflicts=false" >> "$GITHUB_OUTPUT"
+            else
+              # Real conflicts: push main as is and leave them for a human in the PR.
+              {
+                echo "files<<CONFLICT_FILES_EOF"
+                git diff --name-only --diff-filter=U
+                echo "CONFLICT_FILES_EOF"
+              } >> "$GITHUB_OUTPUT"
+              git merge --abort
+              echo "conflicts=true" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
           # The lease makes the push fail if someone pushed to the branch meanwhile.
@@ -211,6 +235,7 @@ jobs:
           (steps.branch.outputs.conflicts == 'true' || steps.automerge.outputs.failed == 'true')
         env:
           CONFLICTS: ${{ steps.branch.outputs.conflicts }}
+          FILES: ${{ steps.branch.outputs.files }}
           PR: ${{ steps.pr.outputs.number }}
           MERGED_BY: ${{ github.event.pull_request.merged_by.login }}
           # Optional repo variable, e.g. "@my-org/backend-team" or "@alice @bob".
@@ -227,14 +252,33 @@ jobs:
           if [ "$CONFLICTS" = true ]; then
             problem=":warning: **Merge conflicts** between \`main\` and \`$TARGET\` — this sync PR will not merge automatically."
             ask="please resolve the conflicts on \`$SYNC_BRANCH\` and merge this PR"
+            files="$(printf '%s\n' "$FILES" | sed '/^$/d; s/.*/- `&`/')"
+            howto="$(cat <<HOWTO
+          Conflicting files:
+          $files
+
+          GitHub's web editor can't resolve deleted or renamed files. To resolve locally:
+          \`\`\`bash
+          git fetch origin
+          git checkout -B $SYNC_BRANCH origin/$SYNC_BRANCH
+          git merge origin/$TARGET
+          # fix the conflicts; for a file deleted on main: git rm <file>
+          git commit
+          git push origin $SYNC_BRANCH
+          \`\`\`
+          HOWTO
+          )"
           else
             problem=":warning: This sync PR could not be merged automatically (see the workflow run: checks, branch protection or repo auto-merge setting)."
             ask="please check and merge this PR"
+            howto=""
           fi
           gh pr comment "$PR" --body "$(cat <<EOF
           $problem
 
           @$MERGED_BY ${NOTIFY} $ask (use **merge commit**, not squash).
+
+          $howto
           EOF
           )"
 
