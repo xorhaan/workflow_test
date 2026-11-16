@@ -42,7 +42,7 @@ func MergeIntervals(intervals [][2]int) [][2]int {
 	merged := [][2]int{sorted[0]}
 	for _, current := range sorted[1:] {
 		last := &merged[len(merged)-1]
-		if current[0] <= last[1] { //correct updated value
+		if current[0] <= last[1] {
 			if current[1] > last[1] {
 				last[1] = current[1]
 			}
